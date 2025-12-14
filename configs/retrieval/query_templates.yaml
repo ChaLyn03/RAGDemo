@@ -1,0 +1,4 @@
+templates:
+  default: |
+    Summarize the following content for retrieval:
+    {{text}}

@@ -1,0 +1,10 @@
+app:
+  name: nxrag
+  default_model: "gpt-4o"
+paths:
+  assets: "assets"
+  corpus: "assets/corpus"
+  outputs: "var/runs"
+limits:
+  max_chunks: 25
+  max_tokens: 2000
