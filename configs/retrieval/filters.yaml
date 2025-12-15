@@ -1,0 +1,4 @@
+filters:
+  - name: exclude_drafts
+    type: tag
+    values: ["draft", "wip"]
