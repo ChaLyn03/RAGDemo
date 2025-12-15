@@ -1,6 +1,6 @@
 # nxrag
 
-Scaffold for a structured retrieval-augmented generation pipeline. The repository layout focuses on clear boundaries between ingestion, retrieval, prompting, validation, and rendering so new contributors can extend components independently. The current state ships a minimal demo that chunks a tiny corpus and renders a Markdown part description.
+Scaffold for a structured retrieval-augmented generation pipeline. The repository layout focuses on clear boundaries between ingestion, retrieval, prompting, validation, and rendering so new contributors can extend components independently.
 
 ## Getting started
 1. Create a virtual environment and install dependencies:
@@ -14,11 +14,6 @@ Scaffold for a structured retrieval-augmented generation pipeline. The repositor
    ```bash
    nxrag --help
    ```
-4. Execute the sample pipeline against a bundled request:
-   ```bash
-   python -m nxrag.cli assets/samples/nx_code/widget_housing_request.txt
-   ```
-   The rendered Markdown output is written under `var/runs/` with a timestamped filename.
 
 ## Layout highlights
 - **configs/** contains the canonical application, logging, prompt, and retrieval configuration files.

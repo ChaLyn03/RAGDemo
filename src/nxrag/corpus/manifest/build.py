@@ -14,9 +14,7 @@ def iter_markdown_files(corpus_root: str | Path) -> Iterable[Path]:
 
 
 def build_manifest(corpus_root: str | Path) -> list[ManifestEntry]:
-    entries: list[ManifestEntry] = []
+    entries = []
     for path in iter_markdown_files(corpus_root):
-        heading = path.read_text(encoding="utf-8").splitlines()[0].lstrip("# ") if path.exists() else ""
-        tags = [heading] if heading else []
-        entries.append(ManifestEntry(path=path, tags=tags))
+        entries.append(ManifestEntry(path=path, tags=[]))
     return entries

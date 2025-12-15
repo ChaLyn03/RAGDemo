@@ -9,7 +9,6 @@ description = "Structured retrieval-augmented generation pipeline scaffold"
 authors = [{ name = "nxrag contributors" }]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -38,12 +37,3 @@ select = ["E", "F", "I", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[project.optional-dependencies]
-dev = [
-    "black>=24.0.0",
-    "isort>=5.13.0",
-    "pytest>=8.0.0",
-    "ruff>=0.5.0",
-    "pre-commit>=3.7.0",
-]

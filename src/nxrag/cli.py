@@ -17,8 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    output = run_pipeline(input_path=args.input, config_path=args.config)
-    print(f"Rendered output written to {output}")
+    run_pipeline(input_path=args.input, config_path=args.config)
     return 0
 
 
