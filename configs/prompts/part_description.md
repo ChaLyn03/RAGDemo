@@ -3,11 +3,17 @@ You are preparing a short part description for fabrication and assembly stakehol
 User request:
 {request}
 
-Relevant corpus excerpts:
+Relevant corpus excerpts (authoritative):
 {context}
 
-Write a concise Markdown note with:
-- Overview of the part intent
-- Key material and tolerance points
-- A short list of practices that improve reliability in vibration
-Keep it to three short sections.
+Hard constraints (must follow):
+- Use ONLY facts stated in the User request or Relevant corpus excerpts.
+- If a fact is not stated, write: "Not specified in provided input."
+- You MUST incorporate exemplar-backed details when they exist in the excerpts (materials, tolerances, fastener practices).
+- Output MUST be exactly 3 sections with these headings (verbatim):
+  1) ## Overview
+  2) ## Materials & tolerances
+  3) ## Vibration reliability practices
+- Keep each section short. No extra headers or titles.
+
+Write the final Markdown now.

@@ -14,6 +14,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 
+[project.scripts]
+nxrag = "nxrag.cli:main"
+
 [project.urls]
 Homepage = "https://example.com/nxrag"
 Repository = "https://example.com/nxrag"
