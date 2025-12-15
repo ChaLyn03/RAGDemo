@@ -1,0 +1,4 @@
+Widget housing
+
+We need a short description for a widget housing intended for vibration-prone environments. Emphasize material choice,
+basic tolerances, and any mounting or sealing considerations that keep the assembly reliable.
