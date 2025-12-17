@@ -1,84 +1,94 @@
-"""Simple validator to ensure exemplar-backed details appear in the output.
+"""
+Lexical MVP validator: if retrieved exemplars/style/template contain concrete facts,
+the model output must include them.
 
-MVP approach:
-- If retrieved context contains strong exemplar signals (e.g., 6061-T6, ±0.05, threadlocker/anti-seize/torque),
-  require the model output to include at least one item from each category present.
-
-This is intentionally blunt and lexical. Replace later with IR + citation-based validation.
+This module MUST expose `validate_exemplar_inclusion` because the pipeline imports it.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import Iterable
+
+
+_TOL_RE = re.compile(r"±\s*\d+(?:\.\d+)?\s*(?:mm|in)\b", re.IGNORECASE)
+_MATERIAL_RE = re.compile(
+    r"\b(6061[-\s]?T6|7075[-\s]?T6|stainless\s+steel|aluminum|aluminium)\b",
+    re.IGNORECASE,
+)
+_TORQUE_RE = re.compile(r"\b\d+(?:\.\d+)?\s*N[·\. ]?m\b", re.IGNORECASE)
+
+_FASTENER_HINTS = [
+    "threadlocker",
+    "anti-seize",
+    "socket head cap screws",
+    "torque",
+]
 
 
 @dataclass
-class ValidationResult:
+class ExemplarValidation:
     ok: bool
-    missing: List[str]
+    missing: list[str]
 
 
-_MATERIAL_PATTERNS = [
-    r"\b6061[-\s]?t6\b",
-    r"\baluminum\b",
-    r"\baluminium\b",
-]
-
-_TOLERANCE_PATTERNS = [
-    r"±\s*\d+(\.\d+)?\s*mm",
-    r"\b\+\s*/\s*-\s*\d+(\.\d+)?\s*mm\b",
-    r"\btolerance\b",
-]
-
-_VIBE_PRACTICE_PATTERNS = [
-    r"\bthreadlocker\b",
-    r"\banti-?seize\b",
-    r"\btorque\b",
-    r"\bsocket head cap screws\b",
-]
+def _has_any(pattern: re.Pattern[str], text: str) -> bool:
+    return pattern.search(text) is not None
 
 
-def _contains_any(text: str, patterns: list[str]) -> bool:
-    t = text.lower()
-    return any(re.search(p, t, flags=re.IGNORECASE) for p in patterns)
+def _any_substring(haystack: str, needles: Iterable[str]) -> bool:
+    h = haystack.lower()
+    return any(n.lower() in h for n in needles)
 
 
-_PRACTICE_SUBTOPICS = {
-    "threadlocker": [r"\bthreadlocker\b"],
-    "anti_seize": [r"\banti-?seize\b"],
-    "torque": [r"\btorque\b", r"\bN[·.]m\b", r"\bN\s*·\s*m\b"],
-}
+def _exemplar_demands(retrieved_context: str) -> list[str]:
+    demands: list[str] = []
+
+    if _has_any(_TOL_RE, retrieved_context):
+        demands.append("tolerance")
+
+    if _has_any(_MATERIAL_RE, retrieved_context):
+        demands.append("material")
+
+    if _has_any(_TORQUE_RE, retrieved_context):
+        demands.append("torque")
+
+    if _any_substring(retrieved_context, _FASTENER_HINTS):
+        demands.append("fastener_practice")
+
+    return demands
 
 
-def validate_exemplar_inclusion(exemplar_text: str, output_text: str) -> ValidationResult:
-    """Require exemplar-backed categories (and subtopics) to appear in the output."""
+def validate_require_exemplars(output_text: str, retrieved_context: str) -> ExemplarValidation:
+    """
+    Core validator: decide what details are required (based on retrieved_context),
+    then ensure output_text contains them.
+    """
     missing: list[str] = []
+    demands = _exemplar_demands(retrieved_context)
+    out = output_text.strip()
 
-    # Determine which categories are "present" in retrieved exemplars
-    needs_material = _contains_any(exemplar_text, _MATERIAL_PATTERNS)
-    needs_tolerance = _contains_any(exemplar_text, _TOLERANCE_PATTERNS)
-    needs_practices = _contains_any(exemplar_text, _VIBE_PRACTICE_PATTERNS)
+    if "tolerance" in demands and not _has_any(_TOL_RE, out):
+        missing.append("explicit tolerance from exemplars (e.g., ±0.05 mm)")
 
-    # Check output for those categories
-    if needs_material and not _contains_any(output_text, _MATERIAL_PATTERNS):
-        missing.append("material detail from exemplars (e.g., 6061-T6 aluminum)")
+    if "material" in demands and not _has_any(_MATERIAL_RE, out):
+        missing.append("material from exemplars (e.g., 6061-T6)")
 
-    # Tolerance: if context has explicit ±...mm, require that form; otherwise tolerate generic "tolerance"
-    if needs_tolerance:
-        # Prefer explicit ± mm if present in context
-        explicit_in_ctx = _contains_any(exemplar_text, [r"±\s*\d+(\.\d+)?\s*mm"])
-        if explicit_in_ctx:
-            if not _contains_any(output_text, [r"±\s*\d+(\.\d+)?\s*mm"]):
-                missing.append("explicit tolerance from exemplars (e.g., ±0.05 mm)")
-        else:
-            if not _contains_any(output_text, _TOLERANCE_PATTERNS):
-                missing.append("tolerance detail from exemplars")
+    if "torque" in demands and not _has_any(_TORQUE_RE, out):
+        missing.append("torque value from exemplars (e.g., 4.5 N·m)")
 
-    if needs_practices:
-        for label, patterns in _PRACTICE_SUBTOPICS.items():
-            if _contains_any(exemplar_text, patterns) and not _contains_any(output_text, patterns):
-                missing.append(f"{label.replace('_', ' ')} practice from exemplars")
+    if "fastener_practice" in demands and not _any_substring(out, _FASTENER_HINTS):
+        missing.append("fastener practice from exemplars (e.g., threadlocker / anti-seize)")
 
-    return ValidationResult(ok=(len(missing) == 0), missing=missing)
+    return ExemplarValidation(ok=(len(missing) == 0), missing=missing)
+
+
+# ---------------------------------------------------------------------
+# Compatibility shim: this is what your pipeline currently imports.
+# run.py calls:
+#   validation = validate_exemplar_inclusion(exemplar_text=..., output_text=...)
+#   if not validation.ok: ...
+# ---------------------------------------------------------------------
+def validate_exemplar_inclusion(*, exemplar_text: str, output_text: str) -> ExemplarValidation:
+    return validate_require_exemplars(output_text=output_text, retrieved_context=exemplar_text)
