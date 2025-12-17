@@ -9,9 +9,8 @@ Returns:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, Iterable, List, Tuple
 
 
 def _read_text(path: Path, max_chars: int) -> str:
@@ -26,18 +25,20 @@ def _block(kind: str, path: Path, max_chars: int) -> str:
     return f"### {kind}: {path.as_posix()}\n\n{body}\n\n---\n"
 
 
-def _first_file(dir_path: Path) -> Path | None:
-    if not dir_path.exists():
-        return None
-    files = sorted([p for p in dir_path.iterdir() if p.is_file()])
-    return files[0] if files else None
-
-
-def _first_n_files(dir_path: Path, n: int) -> list[Path]:
+def _filtered_files(dir_path: Path, patterns: Iterable[str]) -> list[Path]:
+    """Return sorted files matching patterns, skipping dotfiles/.gitkeep."""
     if not dir_path.exists():
         return []
-    files = sorted([p for p in dir_path.iterdir() if p.is_file()])
-    return files[:n]
+    matches: list[Path] = []
+    for pat in patterns:
+        for p in sorted(dir_path.glob(pat)):
+            if not p.is_file():
+                continue
+            name = p.name
+            if name.startswith(".") or name == ".gitkeep":
+                continue
+            matches.append(p)
+    return matches
 
 
 def retrieve_context(
@@ -61,10 +62,18 @@ def retrieve_context(
     style_dir = corpus_root / "style_rules"
     glossary_dir = corpus_root / "glossary"
 
-    template = _first_file(templates_dir)
-    exemplars = _first_n_files(exemplars_dir, max_exemplars)
-    style_rules = _first_file(style_dir)
-    glossary = _first_file(glossary_dir)
+    template_candidates = _filtered_files(templates_dir, ["*.md"])
+    style_candidates = _filtered_files(style_dir, ["*.md"])
+    glossary_candidates = _filtered_files(glossary_dir, ["*.md"])
+
+    # Prefer Markdown exemplars; optionally allow IR JSON after MD.
+    exemplar_candidates = _filtered_files(exemplars_dir, ["*.md"])
+    exemplar_candidates += _filtered_files(exemplars_dir, ["*.ir.json"])
+
+    template = template_candidates[0] if template_candidates else None
+    style_rules = style_candidates[0] if style_candidates else None
+    glossary = glossary_candidates[0] if glossary_candidates else None
+    exemplars = exemplar_candidates[:max_exemplars] if max_exemplars > 0 else []
 
     # Render text blocks
     context_blocks: list[str] = []
