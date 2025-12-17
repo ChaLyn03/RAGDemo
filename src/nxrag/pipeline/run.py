@@ -40,9 +40,54 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _pack_prompt(template_text: str, request_text: str, context_text: str) -> str:
-    # Strict substitution (template should contain both placeholders)
-    return template_text.replace("{request}", request_text).replace("{context}", context_text)
+def _pack_prompt(
+    template_text: str,
+    *,
+    request_text: str,
+    facts_text: str,
+    approved_defaults_text: str,
+    context_text: str,
+) -> str:
+    """Strict substitution for prompt template placeholders."""
+    return (
+        template_text.replace("{request}", request_text)
+        .replace("{facts}", facts_text)
+        .replace("{approved_defaults}", approved_defaults_text)
+        .replace("{context}", context_text)
+    )
+
+
+def _format_ir_facts(ir: dict[str, Any]) -> str:
+    """Compact, human-readable facts block derived from IR."""
+    part = ir.get("part") or {}
+    materials = ir.get("materials") or []
+    tolerances = ir.get("tolerances") or []
+    features = ir.get("features") or []
+
+    lines = [
+        f"- Part name: {part.get('name') or 'Not detected'}",
+        f"- Units: {part.get('units') or 'Not detected'}",
+    ]
+
+    if materials:
+        for m in materials:
+            lines.append(f"- Material: {m.get('value')}  [evidence: {m.get('evidence')}]")
+    else:
+        lines.append("- Material: Not detected")
+
+    if tolerances:
+        for t in tolerances:
+            lines.append(f"- Tolerance: {t.get('value')}  [evidence: {t.get('evidence')}]")
+    else:
+        lines.append("- Tolerance: Not detected")
+
+    if features:
+        for f in features:
+            lines.append(f"- Feature: {f.get('kind')}  [evidence: {f.get('evidence')}]")
+    else:
+        lines.append("- Feature: Not detected")
+
+    return "\n".join(lines)
 
 
 def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
@@ -79,7 +124,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
 
     # --- Step 2: Retrieval (deterministic; no embeddings yet) ---
     corpus_root = repo_root / settings.corpus_path
-    context_text, retrieval_log = retrieve_context(
+    context_text, approved_defaults_text, retrieval_log = retrieve_context(
         corpus_root,
         repo_root=repo_root,
         max_exemplars=2,
@@ -94,7 +139,14 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     template_text = _read_text(template_path)
 
     request_text = raw_input_text.strip()
-    packed_prompt = _pack_prompt(template_text, request_text, context_text)
+    facts_text = _format_ir_facts(ir)
+    packed_prompt = _pack_prompt(
+        template_text,
+        request_text=request_text,
+        facts_text=facts_text,
+        approved_defaults_text=approved_defaults_text,
+        context_text=context_text,
+    )
     (run_dir / "prompt.txt").write_text(packed_prompt, encoding="utf-8")
 
     # --- Step 4: Generation ---
@@ -107,7 +159,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     completion = client.complete(packed_prompt).strip()
 
     # --- Step 5: Validate exemplar inclusion and retry once if needed ---
-    validation = validate_exemplar_inclusion(context_text=context_text, output_text=completion)
+    validation = validate_exemplar_inclusion(exemplar_text=approved_defaults_text, output_text=completion)
     attempts = 1
     retry_prompt_path: Path | None = None
 
@@ -129,7 +181,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
         attempts += 1
 
         validation_retry = validate_exemplar_inclusion(
-            context_text=context_text, output_text=completion_retry
+            exemplar_text=approved_defaults_text, output_text=completion_retry
         )
         if validation_retry.ok:
             completion = completion_retry
@@ -140,20 +192,22 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
             validation = validation_retry
 
     # --- Step 6: Write artifacts ---
+    retry_used = attempts > 1
     generation_log: dict[str, Any] = {
         "provider": settings.llm_provider,
         "model": settings.default_model,
         "max_tokens": settings.max_tokens,
         "attempts": attempts,
+        "retry_used": retry_used,
+        "retry_prompt_path": str(retry_prompt_path) if retry_prompt_path else None,
         "validation": {
             "ok": validation.ok,
             "missing": validation.missing,
         },
-        "notes": (
-            "Validator is lexical MVP: it requires exemplar-backed details when present in retrieved context. "
-            "See prompt.txt (and prompt_retry_1.txt if created)."
-        ),
+        "notes": "Validator is lexical MVP: it requires exemplar-backed details when present in retrieved exemplars.",
     }
+    if retry_used and retry_prompt_path:
+        generation_log["notes"] += f" Retry prompt stored at {retry_prompt_path}."
     (run_dir / "generation.json").write_text(
         json.dumps(generation_log, indent=2), encoding="utf-8"
     )

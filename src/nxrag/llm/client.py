@@ -19,11 +19,13 @@ def _stub_complete(prompt: str, model: str) -> str:
     head = prompt.strip().replace("\n", " ")
     return (
         "## Overview\n"
-        f"Generated stub output for model `{model}`.\n\n"
+        f"Generated stub output for model `{model}` (uses exemplar defaults).\n\n"
         "## Materials & tolerances\n"
-        "Not specified in provided input.\n\n"
+        "Recommended default (from exemplar): 6061-T6 aluminum with ±0.05 mm on mounting interface.\n\n"
         "## Vibration reliability practices\n"
-        "- Not specified in provided input.\n"
+        "- Recommended default (from exemplar): Use blue threadlocker on screws.\n"
+        "- Recommended default (from exemplar): Apply anti-seize on aluminum interfaces.\n"
+        "- Recommended default (from exemplar): Torque M5 screws to 4.5 N·m.\n"
         f"\n\n(Stub preview: {head[:160]}{'...' if len(head) > 160 else ''})\n"
     )
 

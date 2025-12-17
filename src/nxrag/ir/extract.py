@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 
 # ----------------------------
@@ -24,8 +24,9 @@ from typing import Any, Iterable, Optional
 
 @dataclass
 class IRSource:
-    type: str
+    type: str  # declared type from caller
     path: str
+    detected_type: Optional[str] = None  # heuristic detection
 
 
 @dataclass
@@ -146,6 +147,18 @@ def _detect_units(text: str) -> Optional[str]:
     return None
 
 
+def _evidence_window(text: str, start: int, end: int, *, pad: int = 60) -> str:
+    """Return a small, word-aware window around a match."""
+    s = max(0, start - pad)
+    e = min(len(text), end + pad)
+
+    while s > 0 and not text[s - 1].isspace():
+        s -= 1
+    while e < len(text) and not text[e - 1].isspace():
+        e += 1
+    return _norm_line(text[s:e])
+
+
 def _extract_tolerances(text: str) -> list[IRTolerance]:
     out: list[IRTolerance] = []
     seen: set[str] = set()
@@ -157,9 +170,7 @@ def _extract_tolerances(text: str) -> list[IRTolerance]:
                 continue
             seen.add(val.lower())
             # Evidence: capture a small window around the match for traceability
-            start = max(0, m.start() - 60)
-            end = min(len(text), m.end() + 60)
-            ev = _norm_line(text[start:end])
+            ev = _evidence_window(text, m.start(), m.end())
             out.append(IRTolerance(value=val, evidence=ev))
 
     return out
@@ -177,9 +188,7 @@ def _extract_materials(text: str) -> list[IRMaterial]:
                 continue
             seen.add(key)
 
-            start = max(0, m.start() - 60)
-            end = min(len(text), m.end() + 60)
-            ev = _norm_line(text[start:end])
+            ev = _evidence_window(text, m.start(), m.end())
             out.append(IRMaterial(value=val, evidence=ev))
 
     return out
@@ -191,9 +200,7 @@ def _extract_features(text: str) -> list[IRFeature]:
         m = rx.search(text)
         if not m:
             continue
-        start = max(0, m.start() - 60)
-        end = min(len(text), m.end() + 60)
-        ev = _norm_line(text[start:end])
+        ev = _evidence_window(text, m.start(), m.end())
         out.append(IRFeature(kind=kind, evidence=ev))
     return out
 
@@ -236,9 +243,11 @@ def extract_ir(
     # Optional flags about what we think the input is
     looks_like_nx = bool(_RE_NX_CALL.search(input_text) or _RE_NX_FEATURE_HINT.search(input_text))
 
+    detected_type = "nxopen_python_text" if looks_like_nx else "plain_text"
+
     ir = IRv1(
         ir_version="v1",
-        source=IRSource(type=source_type, path=source_path),
+        source=IRSource(type=source_type, path=source_path, detected_type=detected_type),
         part=IRPart(name=part_name, units=units),
         materials=materials,
         tolerances=tolerances,
@@ -256,6 +265,7 @@ def extract_ir(
 
 def render_ir_summary(ir: dict[str, Any]) -> str:
     """Human-readable summary for quick inspection."""
+    source = ir.get("source", {}) or {}
     part = ir.get("part", {}) or {}
     mats = ir.get("materials", []) or []
     tols = ir.get("tolerances", []) or []
@@ -263,6 +273,10 @@ def render_ir_summary(ir: dict[str, Any]) -> str:
 
     lines: list[str] = []
     lines.append("IR SUMMARY (v1)")
+    lines.append("")
+    lines.append(f"Source declared_type: {source.get('type') or 'Unknown'}")
+    lines.append(f"Source detected_type: {source.get('detected_type') or 'Unknown'}")
+    lines.append(f"Source path: {source.get('path')}")
     lines.append("")
     lines.append(f"Part name: {part.get('name') or 'Not detected'}")
     lines.append(f"Units: {part.get('units') or 'Not detected'}")

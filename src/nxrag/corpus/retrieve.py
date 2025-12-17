@@ -44,8 +44,8 @@ def retrieve_context(
     repo_root: Path | None = None,
     max_exemplars: int = 2,
     max_chars_per_doc: int = 2000,
-) -> tuple[str, dict[str, Any]]:
-    """Return (context_text, retrieval_log).
+) -> tuple[str, str, dict[str, Any]]:
+    """Return (context_text, exemplar_text, retrieval_log).
 
     corpus_root should be: assets/corpus
     containing subfolders: templates/, exemplars/, style_rules/, glossary/
@@ -69,6 +69,7 @@ def retrieve_context(
     selected_glossary = glossaries[0] if glossaries else None
 
     sections: list[str] = []
+    exemplar_sections: list[str] = []
     files_used: list[str] = []
 
     def add_section(title: str, p: Path | None) -> None:
@@ -79,7 +80,11 @@ def retrieve_context(
         text = _read_text(p).strip()
         if max_chars_per_doc and len(text) > max_chars_per_doc:
             text = text[:max_chars_per_doc].rstrip() + "\n\n[TRUNCATED]"
-        sections.append(f"### {title}: {rel}\n\n{text}")
+        block = f"### {title}: {rel}\n\n{text}"
+        if title.startswith("EXEMPLAR"):
+            exemplar_sections.append(block)
+        else:
+            sections.append(block)
         files_used.append(rel)
 
     add_section("TEMPLATE", selected_template)
@@ -88,10 +93,8 @@ def retrieve_context(
     add_section("STYLE RULES", selected_style)
     add_section("GLOSSARY", selected_glossary)
 
-    if not sections:
-        context_text = "- Corpus not found or empty; no excerpts retrieved."
-    else:
-        context_text = "\n\n---\n\n".join(sections)
+    context_text = "\n\n---\n\n".join(sections) if sections else "- No template/style/glossary retrieved."
+    exemplar_text = "\n\n---\n\n".join(exemplar_sections) if exemplar_sections else "- No exemplars retrieved."
 
     retrieval_log: dict[str, Any] = {
         "retriever": "static_v1",
@@ -122,4 +125,4 @@ def retrieve_context(
         "notes": "Deterministic retrieval (first files by sorted name). Replace with vector/BM25 later.",
     }
 
-    return context_text, retrieval_log
+    return context_text, exemplar_text, retrieval_log
