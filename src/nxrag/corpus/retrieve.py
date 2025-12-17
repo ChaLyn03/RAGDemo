@@ -1,122 +1,139 @@
-"""Deterministic corpus retrieval (MVP).
+"""
+Deterministic corpus retrieval (static_v1) for MVP.
 
-- selects 1 template
-- selects up to N exemplars
-- selects 1 style rules doc
-- optionally selects 1 glossary doc
-- returns concatenated context text + retrieval log
-
-Improvements in this version:
-- section headers use paths relative to the repo root (or corpus root fallback)
-- retrieval log includes missing/empty directories for clarity
+Returns:
+- context_text: TEMPLATE + STYLE RULES + GLOSSARY (authoritative framing)
+- approved_defaults_text: EXEMPLARS (defaults/practices the validator enforces)
+- retrieval_log: JSON-serializable run log
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Tuple
 
 
-def _read_text(p: Path) -> str:
-    return p.read_text(encoding="utf-8", errors="replace")
+def _read_text(path: Path, max_chars: int) -> str:
+    txt = path.read_text(encoding="utf-8", errors="replace")
+    if len(txt) > max_chars:
+        txt = txt[:max_chars] + "\n\n[TRUNCATED]\n"
+    return txt
 
 
-def _list_md(dir_path: Path) -> list[Path]:
+def _block(kind: str, path: Path, max_chars: int) -> str:
+    body = _read_text(path, max_chars=max_chars).strip()
+    return f"### {kind}: {path.as_posix()}\n\n{body}\n\n---\n"
+
+
+def _first_file(dir_path: Path) -> Path | None:
+    if not dir_path.exists():
+        return None
+    files = sorted([p for p in dir_path.iterdir() if p.is_file()])
+    return files[0] if files else None
+
+
+def _first_n_files(dir_path: Path, n: int) -> list[Path]:
     if not dir_path.exists():
         return []
-    return sorted([p for p in dir_path.glob("*.md") if p.is_file()])
-
-
-def _relpath(p: Path, repo_root: Path, corpus_root: Path) -> str:
-    """Prefer repo-relative paths (e.g., assets/...), else corpus-relative, else absolute."""
-    try:
-        return p.resolve().relative_to(repo_root.resolve()).as_posix()
-    except Exception:
-        try:
-            return p.resolve().relative_to(corpus_root.resolve()).as_posix()
-        except Exception:
-            return p.resolve().as_posix()
+    files = sorted([p for p in dir_path.iterdir() if p.is_file()])
+    return files[:n]
 
 
 def retrieve_context(
     corpus_root: Path,
     *,
-    repo_root: Path | None = None,
+    repo_root: Path,
     max_exemplars: int = 2,
     max_chars_per_doc: int = 2000,
 ) -> tuple[str, str, dict[str, Any]]:
-    """Return (context_text, exemplar_text, retrieval_log).
-
-    corpus_root should be: assets/corpus
-    containing subfolders: templates/, exemplars/, style_rules/, glossary/
     """
-    corpus_root = corpus_root.resolve()
-    repo_root = (repo_root or Path.cwd()).resolve()
+    Deterministic retrieval:
+    - template: first file in templates/
+    - exemplars: first N files in exemplars/
+    - style_rules: first file in style_rules/
+    - glossary: first file in glossary/
+    """
+    corpus_root = Path(corpus_root)
 
     templates_dir = corpus_root / "templates"
     exemplars_dir = corpus_root / "exemplars"
-    style_rules_dir = corpus_root / "style_rules"
+    style_dir = corpus_root / "style_rules"
     glossary_dir = corpus_root / "glossary"
 
-    templates = _list_md(templates_dir)
-    exemplars = _list_md(exemplars_dir)
-    style_rules = _list_md(style_rules_dir)
-    glossaries = _list_md(glossary_dir)
+    template = _first_file(templates_dir)
+    exemplars = _first_n_files(exemplars_dir, max_exemplars)
+    style_rules = _first_file(style_dir)
+    glossary = _first_file(glossary_dir)
 
-    selected_template = templates[0] if templates else None
-    selected_exemplars = exemplars[: max_exemplars if max_exemplars > 0 else 0]
-    selected_style = style_rules[0] if style_rules else None
-    selected_glossary = glossaries[0] if glossaries else None
+    # Render text blocks
+    context_blocks: list[str] = []
+    defaults_blocks: list[str] = []
 
-    sections: list[str] = []
-    exemplar_sections: list[str] = []
-    files_used: list[str] = []
+    if template:
+        context_blocks.append(_block("TEMPLATE", template, max_chars=max_chars_per_doc))
 
-    def add_section(title: str, p: Path | None) -> None:
-        nonlocal sections, files_used
+    # EXEMPLARS go into "approved defaults" so validator and prompt share same string.
+    for ex in exemplars:
+        defaults_blocks.append(_block("EXEMPLAR", ex, max_chars=max_chars_per_doc))
+
+    if style_rules:
+        context_blocks.append(_block("STYLE RULES", style_rules, max_chars=max_chars_per_doc))
+
+    if glossary:
+        context_blocks.append(_block("GLOSSARY", glossary, max_chars=max_chars_per_doc))
+
+    context_text = "\n".join(context_blocks).strip()
+    approved_defaults_text = "\n".join(defaults_blocks).strip()
+
+    # Log paths relative to repo_root for readability
+    def rel(p: Path | None) -> str | None:
         if p is None:
-            return
-        rel = _relpath(p, repo_root=repo_root, corpus_root=corpus_root)
-        text = _read_text(p).strip()
-        if max_chars_per_doc and len(text) > max_chars_per_doc:
-            text = text[:max_chars_per_doc].rstrip() + "\n\n[TRUNCATED]"
-        block = f"### {title}: {rel}\n\n{text}"
-        if title.startswith("EXEMPLAR"):
-            exemplar_sections.append(block)
-        else:
-            sections.append(block)
-        files_used.append(rel)
+            return None
+        try:
+            return str(p.relative_to(repo_root))
+        except Exception:
+            return str(p)
 
-    add_section("TEMPLATE", selected_template)
-    for i, ex in enumerate(selected_exemplars, start=1):
-        add_section(f"EXEMPLAR {i}", ex)
-    add_section("STYLE RULES", selected_style)
-    add_section("GLOSSARY", selected_glossary)
+    def rel_list(ps: list[Path]) -> list[str]:
+        out: list[str] = []
+        for p in ps:
+            try:
+                out.append(str(p.relative_to(repo_root)))
+            except Exception:
+                out.append(str(p))
+        return out
 
-    context_text = "\n\n---\n\n".join(sections) if sections else "- No template/style/glossary retrieved."
-    exemplar_text = "\n\n---\n\n".join(exemplar_sections) if exemplar_sections else "- No exemplars retrieved."
+    files_used: list[str] = []
+    if template:
+        files_used.append(rel(template) or str(template))
+    files_used.extend(rel_list(exemplars))
+    if style_rules:
+        files_used.append(rel(style_rules) or str(style_rules))
+    if glossary:
+        files_used.append(rel(glossary) or str(glossary))
 
     retrieval_log: dict[str, Any] = {
         "retriever": "static_v1",
-        "corpus_root": _relpath(corpus_root, repo_root=repo_root, corpus_root=corpus_root),
+        "corpus_root": rel(corpus_root) or str(corpus_root),
         "dirs": {
-            "templates": _relpath(templates_dir, repo_root=repo_root, corpus_root=corpus_root),
-            "exemplars": _relpath(exemplars_dir, repo_root=repo_root, corpus_root=corpus_root),
-            "style_rules": _relpath(style_rules_dir, repo_root=repo_root, corpus_root=corpus_root),
-            "glossary": _relpath(glossary_dir, repo_root=repo_root, corpus_root=corpus_root),
+            "templates": rel(templates_dir) or str(templates_dir),
+            "exemplars": rel(exemplars_dir) or str(exemplars_dir),
+            "style_rules": rel(style_dir) or str(style_dir),
+            "glossary": rel(glossary_dir) or str(glossary_dir),
         },
         "selected": {
-            "template": _relpath(selected_template, repo_root, corpus_root) if selected_template else None,
-            "exemplars": [_relpath(p, repo_root, corpus_root) for p in selected_exemplars],
-            "style_rules": _relpath(selected_style, repo_root, corpus_root) if selected_style else None,
-            "glossary": _relpath(selected_glossary, repo_root, corpus_root) if selected_glossary else None,
+            "template": rel(template),
+            "exemplars": rel_list(exemplars),
+            "style_rules": rel(style_rules),
+            "glossary": rel(glossary),
         },
         "files_used": files_used,
         "counts": {
-            "templates": len(templates),
+            "templates": 1 if template else 0,
             "exemplars": len(exemplars),
-            "style_rules": len(style_rules),
-            "glossary": len(glossaries),
+            "style_rules": 1 if style_rules else 0,
+            "glossary": 1 if glossary else 0,
         },
         "limits": {
             "max_exemplars": max_exemplars,
@@ -125,4 +142,4 @@ def retrieve_context(
         "notes": "Deterministic retrieval (first files by sorted name). Replace with vector/BM25 later.",
     }
 
-    return context_text, exemplar_text, retrieval_log
+    return context_text, approved_defaults_text, retrieval_log
