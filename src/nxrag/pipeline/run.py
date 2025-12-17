@@ -1,14 +1,16 @@
 """Top-level pipeline runner (MVP).
 
-Now performs:
+Performs:
 - per-run folder under outputs_path (default var/runs/)
 - snapshots input
 - writes IR extraction outputs
 - deterministic corpus retrieval (no embeddings yet)
-- packs a final prompt (template bound with {request} and {context})
+- packs a final prompt (template bound with {request}/{facts}/{approved_defaults}/{context})
 - writes prompt.txt for traceability
 - calls LLM
-- validates that exemplar-backed details are included when present
+- validates:
+    * exemplar-backed details are included when present
+    * no-new-claims lint (simple lexical guard)
 - if validation fails: regenerates once with a corrective instruction
 - writes output.md + generation.json (incl. validation outcome)
 """
@@ -23,8 +25,10 @@ from typing import Any
 
 from nxrag.corpus.retrieve import retrieve_context
 from nxrag.llm.client import LLMClient
+from nxrag.prompting.pack import pack_part_description_prompt
 from nxrag.settings import load_settings
 from nxrag.validate.require_exemplars import validate_exemplar_inclusion
+from nxrag.validate.style_lint import validate_no_new_claims
 
 
 def _utc_stamp() -> str:
@@ -38,23 +42,6 @@ def _ensure_dir(p: Path) -> Path:
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
-
-
-def _pack_prompt(
-    template_text: str,
-    *,
-    request_text: str,
-    facts_text: str,
-    approved_defaults_text: str,
-    context_text: str,
-) -> str:
-    """Strict substitution for prompt template placeholders."""
-    return (
-        template_text.replace("{request}", request_text)
-        .replace("{facts}", facts_text)
-        .replace("{approved_defaults}", approved_defaults_text)
-        .replace("{context}", context_text)
-    )
 
 
 def _format_ir_facts(ir: dict[str, Any]) -> str:
@@ -90,6 +77,17 @@ def _format_ir_facts(ir: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _combined_missing(*items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for lst in items:
+        for x in lst:
+            if x not in seen:
+                out.append(x)
+                seen.add(x)
+    return out
+
+
 def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     settings = load_settings(config_path)
     in_path = Path(input_path)
@@ -116,10 +114,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
         source_path=str(in_path),
         source_type="nxopen_python_text",
     )
-
     (run_dir / "ir.json").write_text(json.dumps(ir, indent=2), encoding="utf-8")
-
-    # Optional human-readable summary
     (run_dir / "ir_summary.txt").write_text(render_ir_summary(ir), encoding="utf-8")
 
     # --- Step 2: Retrieval (deterministic; no embeddings yet) ---
@@ -138,16 +133,14 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     template_path = repo_root / "configs" / "prompts" / "part_description.md"
     template_text = _read_text(template_path)
 
-    request_text = raw_input_text.strip()
-    facts_text = _format_ir_facts(ir)
-    packed_prompt = _pack_prompt(
-        template_text,
-        request_text=request_text,
-        facts_text=facts_text,
+    packed = pack_part_description_prompt(
+        template_text=template_text,
+        request_text=raw_input_text.strip(),
+        facts_text=_format_ir_facts(ir),
         approved_defaults_text=approved_defaults_text,
         context_text=context_text,
     )
-    (run_dir / "prompt.txt").write_text(packed_prompt, encoding="utf-8")
+    (run_dir / "prompt.txt").write_text(packed.prompt_text, encoding="utf-8")
 
     # --- Step 4: Generation ---
     client = LLMClient(
@@ -155,63 +148,60 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
         max_tokens=settings.max_tokens,
         provider=settings.llm_provider,
     )
+    completion = client.complete(packed.prompt_text).strip()
 
-    completion = client.complete(packed_prompt).strip()
+    # --- Step 5: Validation + one retry ---
+    exemplar_v = validate_exemplar_inclusion(exemplar_text=packed.exemplar_text, output_text=completion)
+    style_v = validate_no_new_claims(output_text=completion, sources_text=packed.prompt_text)
 
-    # --- Step 5: Validate exemplar inclusion and retry once if needed ---
-    validation = validate_exemplar_inclusion(exemplar_text=approved_defaults_text, output_text=completion)
+    ok = exemplar_v.ok and style_v.ok
+    missing = _combined_missing(exemplar_v.missing, style_v.missing)
+
     attempts = 1
     retry_prompt_path: Path | None = None
 
-    if not validation.ok:
-        # Add a corrective instruction, but keep the same packed prompt content for traceability.
+    if not ok:
         corrective = (
             "\n\n---\n\n"
             "CORRECTION REQUIRED:\n"
-            "Your previous answer failed to incorporate exemplar-backed details.\n"
-            "Revise the answer to include the following missing items (only if present in excerpts):\n"
-            f"- {chr(10).join([f'* {m}' for m in validation.missing])}\n"
-            "Do not add any new facts beyond the excerpts. Keep exactly 3 sections with the required headings.\n"
+            "Your previous answer violated one or more constraints.\n"
+            "Revise the answer to fix the following issues (only using facts present in the prompt above):\n"
+            f"{chr(10).join([f'* {m}' for m in missing])}\n"
+            "Do not add any new facts beyond the prompt. Keep exactly 3 sections with the required headings.\n"
         )
-        retry_prompt = packed_prompt + corrective
+        retry_prompt = packed.prompt_text + corrective
         retry_prompt_path = run_dir / "prompt_retry_1.txt"
         retry_prompt_path.write_text(retry_prompt, encoding="utf-8")
 
         completion_retry = client.complete(retry_prompt).strip()
         attempts += 1
 
-        validation_retry = validate_exemplar_inclusion(
-            exemplar_text=approved_defaults_text, output_text=completion_retry
-        )
-        if validation_retry.ok:
-            completion = completion_retry
-            validation = validation_retry
-        else:
-            # Keep the retry output anyway (best effort), but record failure.
-            completion = completion_retry
-            validation = validation_retry
+        exemplar_v2 = validate_exemplar_inclusion(exemplar_text=packed.exemplar_text, output_text=completion_retry)
+        style_v2 = validate_no_new_claims(output_text=completion_retry, sources_text=packed.prompt_text)
+
+        completion = completion_retry
+        exemplar_v = exemplar_v2
+        style_v = style_v2
+        ok = exemplar_v.ok and style_v.ok
+        missing = _combined_missing(exemplar_v.missing, style_v.missing)
 
     # --- Step 6: Write artifacts ---
-    retry_used = attempts > 1
     generation_log: dict[str, Any] = {
         "provider": settings.llm_provider,
         "model": settings.default_model,
         "max_tokens": settings.max_tokens,
         "attempts": attempts,
-        "retry_used": retry_used,
+        "retry_used": attempts > 1,
         "retry_prompt_path": str(retry_prompt_path) if retry_prompt_path else None,
         "validation": {
-            "ok": validation.ok,
-            "missing": validation.missing,
+            "ok": ok,
+            "missing": missing,
+            "exemplar": {"ok": exemplar_v.ok, "missing": exemplar_v.missing},
+            "no_new_claims": {"ok": style_v.ok, "missing": style_v.missing},
         },
-        "notes": "Validator is lexical MVP: it requires exemplar-backed details when present in retrieved exemplars.",
+        "notes": "Validators are lexical MVP: exemplar inclusion + no-new-claims lint.",
     }
-    if retry_used and retry_prompt_path:
-        generation_log["notes"] += f" Retry prompt stored at {retry_prompt_path}."
-    (run_dir / "generation.json").write_text(
-        json.dumps(generation_log, indent=2), encoding="utf-8"
-    )
-
+    (run_dir / "generation.json").write_text(json.dumps(generation_log, indent=2), encoding="utf-8")
     (run_dir / "output.md").write_text(completion + "\n", encoding="utf-8")
 
     print(f"Running pipeline for {in_path} with model {settings.default_model}")

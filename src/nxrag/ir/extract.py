@@ -158,6 +158,32 @@ def _evidence_window(text: str, start: int, end: int, *, pad: int = 60) -> str:
         e += 1
     return _norm_line(text[s:e])
 
+def _sentence_window(text: str, start: int, end: int, *, max_len: int = 180) -> str:
+    """Return a compact, sentence-like snippet containing the match.
+
+    Prefers sentence boundaries (., !, ?, newline). Falls back to evidence window.
+    """
+    if not text:
+        return ""
+    # Find left boundary
+    left = start
+    while left > 0:
+        ch = text[left - 1]
+        if ch in ".!?\n":
+            break
+        left -= 1
+    # Find right boundary
+    right = end
+    while right < len(text):
+        ch = text[right]
+        if ch in ".!?\n":
+            right += 1
+            break
+        right += 1
+    snippet = _norm_line(text[left:right])
+    if len(snippet) <= max_len:
+        return snippet
+    return _evidence_window(text, start, end, pad=max_len // 3)
 
 def _extract_tolerances(text: str) -> list[IRTolerance]:
     out: list[IRTolerance] = []
@@ -200,7 +226,7 @@ def _extract_features(text: str) -> list[IRFeature]:
         m = rx.search(text)
         if not m:
             continue
-        ev = _evidence_window(text, m.start(), m.end())
+        ev = _sentence_window(text, m.start(), m.end())
         out.append(IRFeature(kind=kind, evidence=ev))
     return out
 

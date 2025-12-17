@@ -1,8 +1,5 @@
-"""
-Lexical MVP validator: if retrieved exemplars/style/template contain concrete facts,
+"""Lexical MVP validator: if retrieved exemplars contain concrete facts,
 the model output must include them.
-
-This module MUST expose `validate_exemplar_inclusion` because the pipeline imports it.
 """
 
 from __future__ import annotations
@@ -42,53 +39,31 @@ def _any_substring(haystack: str, needles: Iterable[str]) -> bool:
     return any(n.lower() in h for n in needles)
 
 
-def _exemplar_demands(retrieved_context: str) -> list[str]:
-    demands: list[str] = []
-
-    if _has_any(_TOL_RE, retrieved_context):
-        demands.append("tolerance")
-
-    if _has_any(_MATERIAL_RE, retrieved_context):
-        demands.append("material")
-
-    if _has_any(_TORQUE_RE, retrieved_context):
-        demands.append("torque")
-
-    if _any_substring(retrieved_context, _FASTENER_HINTS):
-        demands.append("fastener_practice")
-
+def _exemplar_demands(exemplar_text: str) -> set[str]:
+    demands: set[str] = set()
+    if _has_any(_TOL_RE, exemplar_text):
+        demands.add("tolerance")
+    if _has_any(_MATERIAL_RE, exemplar_text):
+        demands.add("material")
+    if _has_any(_TORQUE_RE, exemplar_text):
+        demands.add("torque")
+    if _any_substring(exemplar_text, _FASTENER_HINTS):
+        demands.add("fastener_practice")
     return demands
 
 
-def validate_require_exemplars(output_text: str, retrieved_context: str) -> ExemplarValidation:
-    """
-    Core validator: decide what details are required (based on retrieved_context),
-    then ensure output_text contains them.
-    """
+def validate_exemplar_inclusion(*, exemplar_text: str, output_text: str) -> ExemplarValidation:
     missing: list[str] = []
-    demands = _exemplar_demands(retrieved_context)
+    demands = _exemplar_demands(exemplar_text)
     out = output_text.strip()
 
     if "tolerance" in demands and not _has_any(_TOL_RE, out):
         missing.append("explicit tolerance from exemplars (e.g., ±0.05 mm)")
-
     if "material" in demands and not _has_any(_MATERIAL_RE, out):
         missing.append("material from exemplars (e.g., 6061-T6)")
-
     if "torque" in demands and not _has_any(_TORQUE_RE, out):
         missing.append("torque value from exemplars (e.g., 4.5 N·m)")
-
     if "fastener_practice" in demands and not _any_substring(out, _FASTENER_HINTS):
         missing.append("fastener practice from exemplars (e.g., threadlocker / anti-seize)")
 
     return ExemplarValidation(ok=(len(missing) == 0), missing=missing)
-
-
-# ---------------------------------------------------------------------
-# Compatibility shim: this is what your pipeline currently imports.
-# run.py calls:
-#   validation = validate_exemplar_inclusion(exemplar_text=..., output_text=...)
-#   if not validation.ok: ...
-# ---------------------------------------------------------------------
-def validate_exemplar_inclusion(*, exemplar_text: str, output_text: str) -> ExemplarValidation:
-    return validate_require_exemplars(output_text=output_text, retrieved_context=exemplar_text)
