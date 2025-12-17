@@ -1,38 +1,16 @@
-"""IR extraction v1 (heuristic).
+"""IR extraction (v1/v1.1).
 
-This module extracts conservative facts from:
-- plain text requests
-- NX Open Python-ish text blobs
-
-Design principles:
-- Best-effort extraction; never invent values.
-- Keep evidence small and local: store matched snippets.
-- Prefer "unknown" over guessing.
+Iteration 4:
+- Add parsing for real NXOpen Python scripts (heuristic, line-evidence).
+- Keep IR conservative: only emit what we can justify from input text/code.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Any, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
 
-
-# ----------------------------
-# Data model (IR v1)
-# ----------------------------
-
-@dataclass
-class IRSource:
-    type: str  # declared type from caller
-    path: str
-    detected_type: Optional[str] = None  # heuristic detection
-
-
-@dataclass
-class IRPart:
-    name: Optional[str] = None
-    units: Optional[str] = None  # "mm" | "in" | None
+from nxrag.inputs.nxopen_python import looks_like_nxopen_python, parse_nxopen_python
 
 
 @dataclass
@@ -54,255 +32,101 @@ class IRFeature:
 
 
 @dataclass
-class IRv1:
-    ir_version: str
-    source: IRSource
-    part: IRPart
-    materials: list[IRMaterial]
-    tolerances: list[IRTolerance]
-    features: list[IRFeature]
-    parameters: list[dict[str, Any]]
-    evidence: dict[str, Any]
+class IRParameter:
+    name: str
+    value: str
+    evidence: str
 
 
-# ----------------------------
-# Regex helpers
-# ----------------------------
-
-_RE_WS = re.compile(r"\s+")
-_RE_UNITS_MM = re.compile(r"\b(mm|millimet(er|re)s?)\b", re.IGNORECASE)
-_RE_UNITS_IN = re.compile(r"\b(inches|inch|in)\b", re.IGNORECASE)
-
-# Common tolerance patterns in text:
-# - ±0.05 mm
-# - +/- 0.05 mm
-# - + / - 0.05 mm
-_RE_TOL_PM = re.compile(r"(±\s*\d+(?:\.\d+)?\s*(?:mm|in)?)", re.IGNORECASE)
-_RE_TOL_PLUS_MINUS = re.compile(
-    r"(\+\/-\s*\d+(?:\.\d+)?\s*(?:mm|in)?)", re.IGNORECASE
-)
-_RE_TOL_SPACED = re.compile(
-    r"(\+\s*/\s*-\s*\d+(?:\.\d+)?\s*(?:mm|in)?)", re.IGNORECASE
-)
-
-# Materials: conservative list (extend as needed)
-# We only extract if one of these tokens appears.
-_MATERIAL_KEYWORDS = [
-    r"\b6061[-\s]?t6\b",
-    r"\b7075[-\s]?t6\b",
-    r"\baluminum\b",
-    r"\baluminium\b",
-    r"\bstainless steel\b",
-    r"\bcarbon steel\b",
-    r"\btitanium\b",
-    r"\binconel\b",
-    r"\bpolycarbonate\b",
-    r"\babs\b",
-    r"\bnylon\b",
-    r"\bdelrin\b",
-    r"\bacetal\b",
-]
-_RE_MATERIALS = [re.compile(p, re.IGNORECASE) for p in _MATERIAL_KEYWORDS]
-
-# "Feature" keywords (very best-effort)
-_FEATURE_PATTERNS = {
-    "hole": re.compile(r"\bhole(s)?\b|\bdrill(ed)?\b", re.IGNORECASE),
-    "fillet": re.compile(r"\bfillet(s)?\b|\bracelet(s)?\b", re.IGNORECASE),
-    "chamfer": re.compile(r"\bchamfer(s)?\b", re.IGNORECASE),
-    "slot": re.compile(r"\bslot(s)?\b", re.IGNORECASE),
-    "pocket": re.compile(r"\bpocket(s)?\b", re.IGNORECASE),
-    "boss": re.compile(r"\bboss(es)?\b", re.IGNORECASE),
-    "thread": re.compile(r"\bthread(ed|ing)?\b|\bM\d+\b", re.IGNORECASE),
-    "mounting_interface": re.compile(r"\bmount(ing)? interface\b|\bmounting\b", re.IGNORECASE),
-    "vent": re.compile(r"\bvent(ing)?\b|\bslot(s)? for thermal\b", re.IGNORECASE),
-    "seal": re.compile(r"\bseal(ing)?\b|\bgasket(s)?\b|\bo-?ring(s)?\b", re.IGNORECASE),
-    "fastener": re.compile(r"\bfastener(s)?\b|\bscrew(s)?\b|\bbolt(s)?\b", re.IGNORECASE),
-}
-
-# NX Open-ish signals (optional use)
-_RE_NX_CALL = re.compile(r"\b(nxopen|NXOpen)\b", re.IGNORECASE)
-_RE_NX_FEATURE_HINT = re.compile(r"\b(Create|Add|Insert)\w*\b", re.IGNORECASE)
-
-
-def _norm_line(s: str) -> str:
-    return _RE_WS.sub(" ", s).strip()
-
-
-def _first_nonempty_line(text: str) -> Optional[str]:
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line:
-            return line
-    return None
-
-
-def _detect_units(text: str) -> Optional[str]:
-    # Preference: explicit "mm" mention beats ambiguous "in" token.
-    if _RE_UNITS_MM.search(text):
-        return "mm"
-    # "in" is ambiguous (english preposition), so require stronger signals:
-    if re.search(r"\b(inch|inches)\b", text, flags=re.IGNORECASE):
-        return "in"
-    # If NXOpen code contains Unit enums, add rules here later.
-    return None
-
-
-def _evidence_window(text: str, start: int, end: int, *, pad: int = 60) -> str:
-    """Return a small, word-aware window around a match."""
-    s = max(0, start - pad)
-    e = min(len(text), end + pad)
-
-    while s > 0 and not text[s - 1].isspace():
-        s -= 1
-    while e < len(text) and not text[e - 1].isspace():
-        e += 1
-    return _norm_line(text[s:e])
-
-def _sentence_window(text: str, start: int, end: int, *, max_len: int = 180) -> str:
-    """Return a compact, sentence-like snippet containing the match.
-
-    Prefers sentence boundaries (., !, ?, newline). Falls back to evidence window.
-    """
-    if not text:
-        return ""
-    # Find left boundary
-    left = start
-    while left > 0:
-        ch = text[left - 1]
-        if ch in ".!?\n":
-            break
-        left -= 1
-    # Find right boundary
-    right = end
-    while right < len(text):
-        ch = text[right]
-        if ch in ".!?\n":
-            right += 1
-            break
-        right += 1
-    snippet = _norm_line(text[left:right])
-    if len(snippet) <= max_len:
-        return snippet
-    return _evidence_window(text, start, end, pad=max_len // 3)
-
-def _extract_tolerances(text: str) -> list[IRTolerance]:
-    out: list[IRTolerance] = []
-    seen: set[str] = set()
-
-    for rx in (_RE_TOL_PM, _RE_TOL_PLUS_MINUS, _RE_TOL_SPACED):
-        for m in rx.finditer(text):
-            val = _norm_line(m.group(1))
-            if val.lower() in seen:
-                continue
-            seen.add(val.lower())
-            # Evidence: capture a small window around the match for traceability
-            ev = _evidence_window(text, m.start(), m.end())
-            out.append(IRTolerance(value=val, evidence=ev))
-
-    return out
-
-
-def _extract_materials(text: str) -> list[IRMaterial]:
-    out: list[IRMaterial] = []
-    seen: set[str] = set()
-
-    for rx in _RE_MATERIALS:
-        for m in rx.finditer(text):
-            val = _norm_line(m.group(0))
-            key = val.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-
-            ev = _evidence_window(text, m.start(), m.end())
-            out.append(IRMaterial(value=val, evidence=ev))
-
-    return out
-
-
-def _extract_features(text: str) -> list[IRFeature]:
-    out: list[IRFeature] = []
-    for kind, rx in _FEATURE_PATTERNS.items():
-        m = rx.search(text)
-        if not m:
-            continue
-        ev = _sentence_window(text, m.start(), m.end())
-        out.append(IRFeature(kind=kind, evidence=ev))
-    return out
-
-
-def _best_effort_part_name(text: str, *, filename_hint: str | None = None) -> Optional[str]:
-    # 1) If the first non-empty line looks like a title (short), use it.
-    first = _first_nonempty_line(text)
-    if first:
-        # Heuristic: short-ish line, not a full sentence.
-        if len(first) <= 80 and not first.endswith("."):
-            return first.strip()
-
-    # 2) If filename hint exists, use stem in a readable way.
-    if filename_hint:
-        stem = Path(filename_hint).stem
-        # Convert snake_case / kebab-case to title case
-        candidate = re.sub(r"[_-]+", " ", stem).strip()
-        if candidate:
-            return candidate.title()
-
-    return None
+def _norm(s: str) -> str:
+    return (s or "").strip()
 
 
 def extract_ir(
-    input_text: str,
+    raw_text: str,
     *,
     source_path: str,
-    source_type: str = "nxopen_python_text",
+    source_type: str,
 ) -> dict[str, Any]:
-    """Return IR as a JSON-serializable dict."""
-    part_name = _best_effort_part_name(input_text, filename_hint=source_path)
-    units = _detect_units(input_text)
+    """Extract an intermediate representation from input.
 
-    materials = _extract_materials(input_text)
-    tolerances = _extract_tolerances(input_text)
+    Supported source_type values (MVP):
+      - "nxopen_python_text"  (NXOpen Python script as text)
+      - "text"                (plain request text)
+    """
+    text = raw_text or ""
 
-    # Feature extraction: try from text; if NX code is present, still ok (heuristics).
-    features = _extract_features(input_text)
+    ir: dict[str, Any] = {
+        "ir_version": "v1",
+        "source": {"type": source_type, "path": source_path},
+        "part": {"name": None, "units": None},
+        "materials": [],
+        "tolerances": [],
+        "features": [],
+        "parameters": [],
+        "evidence": {"notes": ""},
+    }
 
-    # Optional flags about what we think the input is
-    looks_like_nx = bool(_RE_NX_CALL.search(input_text) or _RE_NX_FEATURE_HINT.search(input_text))
+    # Treat NXOpen python specially if either:
+    # - source_type indicates it, OR
+    # - it obviously imports NXOpen
+    is_nx = (source_type.lower().startswith("nxopen")) or looks_like_nxopen_python(text)
 
-    detected_type = "nxopen_python_text" if looks_like_nx else "plain_text"
+    if is_nx:
+        parsed = parse_nxopen_python(text, source_path=source_path)
 
-    ir = IRv1(
-        ir_version="v1",
-        source=IRSource(type=source_type, path=source_path, detected_type=detected_type),
-        part=IRPart(name=part_name, units=units),
-        materials=materials,
-        tolerances=tolerances,
-        features=features,
-        parameters=[],
-        evidence={
-            "looks_like_nxopen": looks_like_nx,
-            "notes": "IR extraction v1 is heuristic; values are extracted only if explicitly present in input.",
-        },
+        ir["part"]["name"] = parsed.get("part_name")
+        ir["part"]["units"] = parsed.get("units")
+
+        for m in parsed.get("materials") or []:
+            ir["materials"].append(asdict(IRMaterial(value=_norm(m.get("value")), evidence=_norm(m.get("evidence")))))
+
+        for t in parsed.get("tolerances") or []:
+            ir["tolerances"].append(asdict(IRTolerance(value=_norm(t.get("value")), evidence=_norm(t.get("evidence")))))
+
+        for f in parsed.get("features") or []:
+            ir["features"].append(asdict(IRFeature(kind=_norm(f.get("kind")), evidence=_norm(f.get("evidence")))))
+
+        for p in parsed.get("parameters") or []:
+            ir["parameters"].append(
+                asdict(IRParameter(name=_norm(p.get("name")), value=_norm(p.get("value")), evidence=_norm(p.get("evidence"))))
+            )
+
+        ir["evidence"]["notes"] = (
+            "IR extracted from NXOpen Python using heuristic line-based parser (Iteration 4). "
+            "Features/materials/tolerances are best-effort and backed by line evidence."
+        )
+        return ir
+
+    # Fallback: plain text request (previous behavior, conservative)
+    # We only do best-effort part name from first non-empty line.
+    first_line = None
+    for line in text.splitlines():
+        if line.strip():
+            first_line = line.strip()
+            break
+
+    if first_line:
+        ir["part"]["name"] = first_line
+
+    ir["evidence"]["notes"] = (
+        "IR extracted from plain text (no NXOpen parser used). "
+        "Material/tolerances/features are intentionally not inferred at this stage."
     )
-
-    # Convert dataclasses to plain dicts
-    return asdict(ir)
+    return ir
 
 
 def render_ir_summary(ir: dict[str, Any]) -> str:
-    """Human-readable summary for quick inspection."""
-    source = ir.get("source", {}) or {}
-    part = ir.get("part", {}) or {}
-    mats = ir.get("materials", []) or []
-    tols = ir.get("tolerances", []) or []
-    feats = ir.get("features", []) or []
+    part = ir.get("part") or {}
+    mats = ir.get("materials") or []
+    tols = ir.get("tolerances") or []
+    feats = ir.get("features") or []
+    params = ir.get("parameters") or []
 
     lines: list[str] = []
-    lines.append("IR SUMMARY (v1)")
-    lines.append("")
-    lines.append(f"Source declared_type: {source.get('type') or 'Unknown'}")
-    lines.append(f"Source detected_type: {source.get('detected_type') or 'Unknown'}")
-    lines.append(f"Source path: {source.get('path')}")
+    lines.append(f"IR version: {ir.get('ir_version')}")
+    src = ir.get("source") or {}
+    lines.append(f"Source: {src.get('type')}  ({src.get('path')})")
     lines.append("")
     lines.append(f"Part name: {part.get('name') or 'Not detected'}")
     lines.append(f"Units: {part.get('units') or 'Not detected'}")
@@ -311,25 +135,36 @@ def render_ir_summary(ir: dict[str, Any]) -> str:
     lines.append("Materials:")
     if mats:
         for m in mats:
-            lines.append(f"- {m.get('value')}  [evidence: {m.get('evidence')}]")
+            lines.append(f"- {m.get('value')}  [{m.get('evidence')}]")
     else:
-        lines.append("- None detected")
-    lines.append("")
+        lines.append("- (none)")
 
+    lines.append("")
     lines.append("Tolerances:")
     if tols:
         for t in tols:
-            lines.append(f"- {t.get('value')}  [evidence: {t.get('evidence')}]")
+            lines.append(f"- {t.get('value')}  [{t.get('evidence')}]")
     else:
-        lines.append("- None detected")
-    lines.append("")
+        lines.append("- (none)")
 
-    lines.append("Features (best-effort):")
+    lines.append("")
+    lines.append("Features:")
     if feats:
         for f in feats:
-            lines.append(f"- {f.get('kind')}  [evidence: {f.get('evidence')}]")
+            lines.append(f"- {f.get('kind')}  [{f.get('evidence')}]")
     else:
-        lines.append("- None detected")
+        lines.append("- (none)")
 
     lines.append("")
-    return "\n".join(lines)
+    lines.append("Parameters:")
+    if params:
+        for p in params:
+            lines.append(f"- {p.get('name')} = {p.get('value')}  [{p.get('evidence')}]")
+    else:
+        lines.append("- (none)")
+
+    lines.append("")
+    ev = ir.get("evidence") or {}
+    lines.append(f"Notes: {ev.get('notes') or ''}".strip())
+
+    return "\n".join(lines) + "\n"
