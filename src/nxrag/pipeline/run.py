@@ -3,7 +3,7 @@
 Now performs:
 - per-run folder under outputs_path (default var/runs/)
 - snapshots input
-- writes placeholder IR
+- writes IR extraction outputs
 - deterministic corpus retrieval (no embeddings yet)
 - packs a final prompt (template bound with {request} and {context})
 - writes prompt.txt for traceability
@@ -62,18 +62,20 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     input_snapshot = run_dir / f"input{in_path.suffix or '.txt'}"
     shutil.copyfile(in_path, input_snapshot)
 
-    # --- Step 1: IR placeholder (truth layer) ---
-    ir: dict[str, Any] = {
-        "ir_version": "v1",
-        "source": {"type": "nxopen_python_text", "path": str(in_path)},
-        "part": {"name": None, "units": None},
-        "features": [],
-        "parameters": [],
-        "evidence": {
-            "notes": "IR extraction not implemented yet; placeholder created by MVP runner."
-        },
-    }
+    # --- Step 1: IR extraction (truth layer) ---
+    from nxrag.ir.extract import extract_ir, render_ir_summary
+
+    raw_input_text = _read_text(in_path)
+    ir = extract_ir(
+        raw_input_text,
+        source_path=str(in_path),
+        source_type="nxopen_python_text",
+    )
+
     (run_dir / "ir.json").write_text(json.dumps(ir, indent=2), encoding="utf-8")
+
+    # Optional human-readable summary
+    (run_dir / "ir_summary.txt").write_text(render_ir_summary(ir), encoding="utf-8")
 
     # --- Step 2: Retrieval (deterministic; no embeddings yet) ---
     corpus_root = repo_root / settings.corpus_path
@@ -91,7 +93,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     template_path = repo_root / "configs" / "prompts" / "part_description.md"
     template_text = _read_text(template_path)
 
-    request_text = _read_text(in_path).strip()
+    request_text = raw_input_text.strip()
     packed_prompt = _pack_prompt(template_text, request_text, context_text)
     (run_dir / "prompt.txt").write_text(packed_prompt, encoding="utf-8")
 
@@ -161,6 +163,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     print(f"Running pipeline for {in_path} with model {settings.default_model}")
     print(f"Wrote run artifacts to: {run_dir}")
     print(f"- {run_dir / 'ir.json'}")
+    print(f"- {run_dir / 'ir_summary.txt'}")
     print(f"- {run_dir / 'retrieved.json'}")
     print(f"- {run_dir / 'prompt.txt'}")
     if retry_prompt_path:
