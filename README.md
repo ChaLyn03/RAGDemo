@@ -27,6 +27,7 @@ The end-to-end runner (`nxrag` CLI) performs the following steps:
 - `src/nxrag/` – pipeline implementation (CLI, retrieval, LLM client, validation, rendering stubs).
 - `var/runs/` – per-run artifacts (ignored by Git) created by the pipeline.
 - `tools/` – utility scripts and helpers for development.
+- `SETUP.md` – setup and run guide for different environments.
 
 ## Quickstart
 1. Create a virtual environment and install dependencies:
@@ -34,16 +35,36 @@ The end-to-end runner (`nxrag` CLI) performs the following steps:
    python -m venv .venv
    source .venv/bin/activate
    pip install -e .
+   pip install -r requirements.txt
    ```
 2. (Optional) Switch to the real provider:
    ```bash
-   export NX_RAG_LLM_PROVIDER=openai  # requires OPENAI_API_KEY and `pip install openai`
+   pip install -r requirements-openai.txt
+   export NX_RAG_LLM_PROVIDER=openai  # requires OPENAI_API_KEY
    ```
 3. Run the sample request using the stubbed defaults:
    ```bash
    nxrag assets/samples/nx_code/widget_housing_request.txt
    ```
 4. Inspect the generated run folder under `var/runs/` (e.g., `var/runs/20251215T082627Z_widget_housing_request/`) to review `retrieved.json`, `prompt.txt`, `generation.json`, and `output.md`.
+
+## Offline / secure-environment setup
+If you cannot access the public internet from your environment, the pipeline still runs with the stub provider and a minimal dependency set.
+
+1. Copy the repo into your environment (including `assets/`, `configs/`, and `src/`).
+2. Install only the core runtime requirement:
+   ```bash
+   pip install -r requirements.txt
+   pip install -e .
+   ```
+3. Run with the default stub provider (no API key required):
+   ```bash
+   nxrag assets/samples/nx_code/widget_housing_request.txt
+   ```
+
+Optional extras:
+- For the real OpenAI provider, pre-download the wheel and install it offline with `pip install -r requirements-openai.txt`.
+- For linting/testing in the secure environment, install `pip install -r requirements-dev.txt`.
 
 ## Configuration reference
 `configs/app.yaml` drives most runtime behavior:
@@ -54,5 +75,6 @@ The end-to-end runner (`nxrag` CLI) performs the following steps:
 - `limits.max_tokens` – passed directly to the provider; controls response length.
 
 ## Contributing
+- Install tooling with `pip install -r requirements-dev.txt`.
 - Formatting, linting, and type checks run via `pre-commit`. Install hooks with `pre-commit install`.
 - The codebase favors small, composable modules. Keep new components focused and document their artifacts in the run folder for traceability.

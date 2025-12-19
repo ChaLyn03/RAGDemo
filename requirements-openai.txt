@@ -1,0 +1,2 @@
+# Optional provider dependencies
+openai>=1.50.0

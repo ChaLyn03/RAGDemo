@@ -1,0 +1,2 @@
+# Core runtime dependencies (stub provider / offline-friendly)
+PyYAML>=6.0.1
