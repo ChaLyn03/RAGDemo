@@ -88,8 +88,22 @@ def _combined_missing(*items: list[str]) -> list[str]:
     return out
 
 
-def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
+def run_pipeline(
+    input_path: str | Path,
+    config_path: str | Path,
+    *,
+    provider_override: str | None = None,
+    max_tokens_override: int | None = None,
+    defense_mode: bool = False,
+    allow_retry: bool = True,
+) -> None:
     settings = load_settings(config_path)
+    if provider_override:
+        settings.llm_provider = provider_override
+    if max_tokens_override is not None:
+        settings.max_tokens = max_tokens_override
+    if defense_mode:
+        allow_retry = False
     in_path = Path(input_path)
 
     if not in_path.exists():
@@ -125,9 +139,7 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
         max_exemplars=2,
         max_chars_per_doc=2000,
     )
-    (run_dir / "retrieved.json").write_text(
-        json.dumps(retrieval_log, indent=2), encoding="utf-8"
-    )
+    (run_dir / "retrieved.json").write_text(json.dumps(retrieval_log, indent=2), encoding="utf-8")
 
     # --- Step 3: Prompt packing ---
     template_path = repo_root / "configs" / "prompts" / "part_description.md"
@@ -151,7 +163,9 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     completion = client.complete(packed.prompt_text).strip()
 
     # --- Step 5: Validation + one retry ---
-    exemplar_v = validate_exemplar_inclusion(exemplar_text=packed.exemplar_text, output_text=completion)
+    exemplar_v = validate_exemplar_inclusion(
+        exemplar_text=packed.exemplar_text, output_text=completion
+    )
     style_v = validate_no_new_claims(output_text=completion, sources_text=packed.prompt_text)
 
     ok = exemplar_v.ok and style_v.ok
@@ -160,14 +174,16 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     attempts = 1
     retry_prompt_path: Path | None = None
 
-    if not ok:
+    if (not ok) and allow_retry:
         corrective = (
             "\n\n---\n\n"
             "CORRECTION REQUIRED:\n"
             "Your previous answer violated one or more constraints.\n"
-            "Revise the answer to fix the following issues (only using facts present in the prompt above):\n"
+            "Revise the answer to fix the following issues "
+            "(only using facts present in the prompt above):\n"
             f"{chr(10).join([f'* {m}' for m in missing])}\n"
-            "Do not add any new facts beyond the prompt. Keep exactly 3 sections with the required headings.\n"
+            "Do not add any new facts beyond the prompt.\n"
+            "Keep exactly 3 sections with the required headings.\n"
         )
         retry_prompt = packed.prompt_text + corrective
         retry_prompt_path = run_dir / "prompt_retry_1.txt"
@@ -176,8 +192,12 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
         completion_retry = client.complete(retry_prompt).strip()
         attempts += 1
 
-        exemplar_v2 = validate_exemplar_inclusion(exemplar_text=packed.exemplar_text, output_text=completion_retry)
-        style_v2 = validate_no_new_claims(output_text=completion_retry, sources_text=packed.prompt_text)
+        exemplar_v2 = validate_exemplar_inclusion(
+            exemplar_text=packed.exemplar_text, output_text=completion_retry
+        )
+        style_v2 = validate_no_new_claims(
+            output_text=completion_retry, sources_text=packed.prompt_text
+        )
 
         completion = completion_retry
         exemplar_v = exemplar_v2
@@ -215,3 +235,6 @@ def run_pipeline(input_path: str | Path, config_path: str | Path) -> None:
     print(f"- {run_dir / 'generation.json'}")
     print(f"- {run_dir / 'output.md'}")
     print(f"- {input_snapshot}")
+
+    if defense_mode and not ok:
+        raise RuntimeError("Validation failed in defense mode. " f"See run artifacts in: {run_dir}")

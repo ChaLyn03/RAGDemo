@@ -16,6 +16,7 @@ classifiers = [
 
 [project.scripts]
 nxrag = "nxrag.cli:main"
+speed-rack = "nxrag.cli:speed_rack"
 
 [project.urls]
 Homepage = "https://example.com/nxrag"

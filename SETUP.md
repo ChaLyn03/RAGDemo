@@ -48,7 +48,9 @@ pytest
 This uses the stub provider by default.
 
 ```bash
-nxrag assets/samples/nx_code/widget_housing_request.txt
+nxrag
+# or
+speed-rack
 ```
 
 ## Run outputs
@@ -61,6 +63,32 @@ Each run creates a folder under `var/runs/` with artifacts such as:
 ## Provider selection
 - Default: stub provider (deterministic, offline).
 - OpenAI: set `NX_RAG_LLM_PROVIDER=openai` and install `requirements-openai.txt`.
+
+## CLI profiles and modes
+The CLI supports simple profiles and overrides for quick runs:
+
+```bash
+# Demo preset (sample input + stub provider)
+nxrag --profile demo
+
+# Dev preset (sample input + stub provider)
+nxrag --profile dev
+
+# User preset (use your input path + config-driven provider)
+nxrag path/to/request.txt --profile user
+
+# Stub mode
+nxrag --provider stub
+
+# OpenAI mode
+nxrag --provider openai
+
+# Defense mode (no retry, fail on validation)
+nxrag --defense
+
+# Distilled output (shorter response)
+nxrag --distilled
+```
 
 ## Configuration
 See `configs/app.yaml` for model/provider defaults and output locations.

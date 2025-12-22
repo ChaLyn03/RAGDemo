@@ -44,9 +44,51 @@ The end-to-end runner (`nxrag` CLI) performs the following steps:
    ```
 3. Run the sample request using the stubbed defaults:
    ```bash
-   nxrag assets/samples/nx_code/widget_housing_request.txt
+   nxrag
    ```
 4. Inspect the generated run folder under `var/runs/` (e.g., `var/runs/20251215T082627Z_widget_housing_request/`) to review `retrieved.json`, `prompt.txt`, `generation.json`, and `output.md`.
+
+## Streamlined CLI
+If you omit the input path, the CLI uses the bundled sample request.
+
+```bash
+nxrag
+speed-rack
+```
+
+Common presets:
+- Demo mode (stub provider, sample input):
+  ```bash
+  speed-rack
+  # or
+  nxrag --profile demo
+  ```
+- User mode (config-driven provider, your input):
+  ```bash
+  nxrag path/to/request.txt --profile user
+  ```
+- Dev mode (stub provider, sample input):
+  ```bash
+  nxrag --profile dev
+  ```
+
+Additional toggles:
+- Stub provider:
+  ```bash
+  nxrag --provider stub
+  ```
+- OpenAI provider:
+  ```bash
+  nxrag --provider openai
+  ```
+- Defense mode (no retry, fails on validation):
+  ```bash
+  nxrag --defense
+  ```
+- Distilled (shorter response):
+  ```bash
+  nxrag --distilled
+  ```
 
 ## Offline / secure-environment setup
 If you cannot access the public internet from your environment, the pipeline still runs with the stub provider and a minimal dependency set.
@@ -77,6 +119,7 @@ Optional extras:
 ## Additional docs
 - `ARCHITECTURE.md` – pipeline stages, key modules, extension points.
 - `RUN_ARTIFACTS.md` – what each run file means and how to debug outputs.
+- `ROADMAP.md` – planned improvements and upgrade ideas.
 
 ## Contributing
 - Install tooling with `pip install -r requirements-dev.txt`.
