@@ -74,6 +74,10 @@ Optional extras:
 - `llm.provider` – `stub` (deterministic placeholder) or `openai` (real API calls). Override with `NX_RAG_LLM_PROVIDER`.
 - `limits.max_tokens` – passed directly to the provider; controls response length.
 
+## Additional docs
+- `ARCHITECTURE.md` – pipeline stages, key modules, extension points.
+- `RUN_ARTIFACTS.md` – what each run file means and how to debug outputs.
+
 ## Contributing
 - Install tooling with `pip install -r requirements-dev.txt`.
 - Formatting, linting, and type checks run via `pre-commit`. Install hooks with `pre-commit install`.
